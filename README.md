@@ -1,74 +1,119 @@
 # Flussonic Prometheus Exporter
 
-A lightweight Prometheus exporter for **Flussonic Media Server**, designed to collect detailed stream metrics and expose them via HTTP for monitoring systems such as Prometheus and Grafana.
+A lightweight [Prometheus](https://prometheus.io/) exporter for **Flussonic Media Server**. It polls the Flussonic HTTP API (`GET /flussonic/api/v3/streams`), maps per-stream statistics to Prometheus gauges, and serves them on `/metrics` for scraping by Prometheus, Grafana, or compatible stacks.
 
-## 🚀 Features
+## Table of contents
 
-- Collects real-time metrics from the Flussonic API (`GET /flussonic/api/v3/streams`, up to 200 streams per poll).
-- Supports stream-level metrics, including:
-  - Input errors and warnings
-  - Input bits (from `stats.input.bytes`; use PromQL `rate()` for bit/s)
-  - Input source activity and switches
-  - DVR read/write performance
-  - Play HTTP response statistics
-  - Transcoder metrics (hardware, restarts, load, frames)
-  - Stream uptime
-- Exposes metrics in Prometheus text format on `/metrics` (default port **9105**).
-- Configurable via environment variables (optional `.env` via `python-dotenv`).
-- Small footprint: Flask + `prometheus_client` + `requests`; easy to run locally or in Docker.
+- [Purpose](#purpose)
+- [Features](#features)
+- [Architecture](#architecture-overview)
+- [Project layout](#project-layout)
+- [Configuration](#configuration)
+- [Run locally](#run-locally)
+- [Docker](#docker)
+- [Docker Compose](#docker-compose)
+- [HTTP endpoints](#http-endpoints)
+- [Metric catalog](#metric-catalog)
+- [Labels](#labels)
+- [Prometheus scrape config](#prometheus-scrape-configuration)
+- [Example PromQL queries](#example-promql-queries)
+- [Known limitations](#known-limitations)
+- [Migration notes](#migration-notes)
+- [Documentation files](#documentation-files)
+- [Grafana example](#grafana-example-dashboard)
+- [Development](#development)
+- [Contributing](#contributing)
 
-## 🏗️ Architecture overview
+## Purpose
+
+Operators need **open, scrapable metrics** from Flussonic (input health, play HTTP stats, DVR, transcoder, uptime) in one place. This exporter bridges Flussonic’s JSON API and Prometheus text exposition so you can alert and dashboard without proprietary agents. It is designed for **one Flussonic server per exporter process**; use distinct `FLUSSONIC_SERVER_ID` values when you run multiple exporters and scrape them all from Prometheus.
+
+## Features
+
+- Polls the Flussonic API (up to 200 streams per request).
+- Maps input, play, DVR, transcoder, and stream uptime metrics (see [Metric catalog](#metric-catalog)).
+- Validates configuration at startup; structured logging instead of prints.
+- Stale series cleanup when streams disappear from the API response.
+- `/healthz` (liveness) and `/readyz` (readiness after first successful fetch); JSON variants via `?format=json` or `Accept: application/json`.
+- Exporter self-metrics (`flussonic_exporter_build_info`, `flussonic_exporter_last_success_timestamp_seconds`).
+- Optional `.env` loading via `python-dotenv`.
+
+## Architecture overview
 
 ```text
-Flussonic API  --->  Exporter (Flask + Prometheus client)  --->  Prometheus  --->  Grafana
+Flussonic API  --->  Exporter (Flask + prometheus_client)  --->  Prometheus  --->  Grafana
 ```
 
-- The exporter periodically fetches stream data from Flussonic (HTTP Basic auth).
-- It parses `stats` per stream and updates Prometheus gauges in a registry.
-- Prometheus scrapes the `/metrics` endpoint; Grafana (or other tools) use Prometheus as a data source.
+1. A background thread fetches JSON on `FLUSSONIC_FETCH_INTERVAL`.
+2. Response is parsed into internal models (no Flask/Prometheus coupling in the parser).
+3. Gauges in a dedicated `CollectorRegistry` are updated; old label sets are removed when streams or dimensions disappear.
+4. Exporter self-metrics (`flussonic_exporter_*`) record build info and the last successful fetch time.
+5. Flask exposes `generate_latest(registry)` at `/metrics`.
 
-## ⚙️ Configuration
+## Project layout
 
-The exporter is configured using environment variables:
+```text
+flussonic_exporter/   # Python package
+  app.py              # Routes: /metrics, /healthz, /readyz
+  config.py           # Environment + validation
+  logging_config.py
+  client.py           # HTTP + retries
+  models.py           # Parsed stream dataclasses
+  parser.py           # JSON → models
+  metrics.py          # Gauges + label sync
+  collector.py        # Fetch → parse → update loop
+  scheduler.py
+  health.py
+  exporter_self.py    # Build info + last-success timestamp metrics
+  run.py              # Entrypoint
+main.py               # Shim: python main.py
+deploy/prometheus/    # Optional Compose: Prometheus scrape config
+examples/grafana/     # Sample Grafana dashboard JSON
+docs/                 # Contract, naming, compatibility, migration
+tests/                # pytest + fixtures
+```
+
+## Configuration
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `FLUSSONIC_IP` | Flussonic server host or IP | *(required)* |
-| `FLUSSONIC_PORT` | Flussonic API port | `80` |
-| `FLUSSONIC_USERNAME` | API username | *(required)* |
-| `FLUSSONIC_PASSWORD` | API password | *(required)* |
-| `FLUSSONIC_SERVER_ID` | Custom server identifier (`server_id` label on all metrics) | `{IP}:{PORT}` |
+| `FLUSSONIC_IP` | Flussonic host or IP | *(required)* |
+| `FLUSSONIC_PORT` | API port | `80` |
+| `FLUSSONIC_USERNAME` | HTTP Basic user | *(required)* |
+| `FLUSSONIC_PASSWORD` | HTTP Basic password | *(required)* |
+| `FLUSSONIC_SERVER_ID` | Value for `server_id` label | `{IP}:{PORT}` |
 | `FLUSSONIC_FETCH_INTERVAL` | Poll interval (seconds) | `5` |
-| `FLUSSONIC_HTTPS` | Use HTTPS when set to `true` (case-insensitive) | *(unset → HTTP)* |
+| `FLUSSONIC_SCHEME` | `http` or `https` (overrides `FLUSSONIC_HTTPS` when set) | — |
+| `FLUSSONIC_HTTPS` | `true` → HTTPS if scheme not set | `false` |
+| `FLUSSONIC_TIMEOUT` | Request timeout (seconds) | `5` |
+| `FLUSSONIC_VERIFY_SSL` | Verify TLS | `true` |
+| `EXPORTER_PORT` | Listen port | `9105` |
+| `LOG_LEVEL` | e.g. `INFO`, `DEBUG` | `INFO` |
 
-## 🧪 Run locally
+Details: [`docs/current-env.md`](docs/current-env.md).
 
-### 1. Install dependencies
+## Run locally
 
 ```bash
 pip install -r requirements.txt
-```
-
-### 2. Set environment variables
-
-```bash
 export FLUSSONIC_IP=127.0.0.1
 export FLUSSONIC_PORT=80
 export FLUSSONIC_USERNAME=admin
 export FLUSSONIC_PASSWORD=your_password
+python main.py
+# or: python -m flussonic_exporter
 ```
 
-### 3. Run the exporter
+Metrics: `http://localhost:9105/metrics` (or your `EXPORTER_PORT`).
+
+### Tests
 
 ```bash
-python main.py
+pip install -r requirements-dev.txt
+pytest tests/
 ```
 
-### 4. Access metrics
-
-Open `http://localhost:9105/metrics` in a browser or let Prometheus scrape that URL.
-
-## 🐳 Docker
+## Docker
 
 ```bash
 docker build -t flussonic-exporter .
@@ -79,97 +124,198 @@ docker run -p 9105:9105 \
   flussonic-exporter
 ```
 
-## 📊 Metrics overview
+Image entrypoint: `python -m flussonic_exporter`. A `HEALTHCHECK` calls `/healthz`. The process runs as a **non-root** user (`uid` 1000) after `pip install` and file copy.
 
-### 🔹 Input metrics
+## Docker Compose
 
-| Metric | Description |
-|--------|-------------|
-| `flussonic_input_errors_count` | Input errors by `error_type` |
-| `flussonic_input_bits_count` | Input bits (cumulative total; `bytes × 8` from the API) |
-| `flussonic_input_warnings_count` | Input warnings (`invalid_secondary_inputs`) |
-| `flussonic_input_sources` | Time (seconds) on each input source (`primary` / `secondary` / `no_data`) |
-| `flussonic_input_sources_switches` | Number of input source switches |
+For local or lab use, the repo includes [`docker-compose.yml`](docker-compose.yml).
 
-### 🔹 Playback metrics
+1. Copy environment template and edit secrets:
 
-| Metric | Description |
-|--------|-------------|
-| `flussonic_play_count` | HTTP play responses by `protocol`, `resource`, and `status` |
+   ```bash
+   cp .env.example .env
+   # edit .env — set FLUSSONIC_IP, FLUSSONIC_USERNAME, FLUSSONIC_PASSWORD, etc.
+   ```
 
-### 🔹 DVR metrics
+2. Start **only the exporter**:
 
-| Metric | Description |
-|--------|-------------|
-| `flussonic_dvr_read_performance` | DVR read segments by `type` (e.g. fast, slow, delayed, enoent, failed) |
-| `flussonic_dvr_write_performance` | DVR write segments by `type` (e.g. fast, slow, collapsed, failed, …) |
+   ```bash
+   docker compose up -d
+   ```
 
-### 🔹 Transcoder metrics
+   Scrape `http://localhost:9105/metrics` (host port follows `EXPORTER_PORT`).
 
-| Metric | Description |
-|--------|-------------|
-| `flussonic_transcoder_hw` | Hardware encoder type (`hw` label; value `1` when present) |
-| `flussonic_transcoder_restarts` | Transcoder restart count |
-| `flussonic_transcoder_overloaded` | Overload flag (`1` / `0`) |
-| `flussonic_transcoder_qualities` | Number of qualities |
-| `flussonic_transcoder_frames` | Frames processed |
+3. Optional **Prometheus** sidecar (profile `monitoring`) to scrape the exporter by service name:
 
-### 🔹 Stream metrics
+   ```bash
+   docker compose --profile monitoring up -d
+   ```
 
-| Metric | Description |
-|--------|-------------|
-| `flussonic_stream_uptime_miliseconds` | Stream uptime from `stats.lifetime` (metric name uses *miliseconds* as in code) |
+   Prometheus UI: `http://localhost:9090` (override host port with `PROMETHEUS_PORT`). The bundled config is [`deploy/prometheus/prometheus.yml`](deploy/prometheus/prometheus.yml).
 
-## 📌 Labels
+`depends_on: service_healthy` waits until the exporter passes its Docker healthcheck (HTTP `/healthz`), not until Flussonic is reachable; `/readyz` still reflects a successful API fetch.
 
-Most metrics include:
+## HTTP endpoints
 
-- `server_id` — Flussonic server identifier (from `FLUSSONIC_SERVER_ID` or `IP:PORT`).
-- `stream_name` — Stream name (suffix `_stream` removed when present).
+| Path | Purpose |
+|------|---------|
+| `/metrics` | Prometheus scrape target |
+| `/healthz` | Liveness. Plain text `ok` by default; JSON with `?format=json` or `Accept: application/json` |
+| `/readyz` | Readiness — `503` until at least one successful Flussonic fetch. Plain text `ready` / `not ready`, or JSON with `?format=json` / `Accept: application/json` including `server_id`, `last_success_timestamp`, `last_error` |
 
-Additional labels depend on the metric:
+Use JSON readiness in Kubernetes probes when you need timestamps for debugging (`httpGet` with header `Accept: application/json` and optional `?format=json`).
 
-| Label | Used on |
-|-------|---------|
-| `error_type` | `flussonic_input_errors_count` |
-| `protocol`, `resource`, `status` | `flussonic_play_count` |
-| `source` | `flussonic_input_sources` |
-| `type` | DVR read/write metrics |
-| `hw` | `flussonic_transcoder_hw` |
+## Metric catalog
 
-## 🔄 How it works
+All series use **Gauges** with values as reported by Flussonic (often cumulative). Use `rate()` / `irate()` for per-second rates where appropriate.
 
-1. Fetch stream list and stats from the Flussonic API.
-2. For each stream, parse `stats` (input, play, DVR, transcoder, lifetime, etc.).
-3. Map fields to Prometheus `Gauge` series with the labels above.
-4. A background thread repeats on `FLUSSONIC_FETCH_INTERVAL`.
-5. The Flask app serves `generate_latest(registry)` at `/metrics`.
+| Metric | Extra labels | Description |
+|--------|--------------|-------------|
+| `flussonic_input_errors_count` | `error_type` | Per-type input error counters |
+| `flussonic_input_bits_count` | — | Total input bits (`bytes × 8`) |
+| `flussonic_input_warnings_count` | — | Warnings (`invalid_secondary_inputs`) |
+| `flussonic_input_sources` | `source` | Seconds on `primary` / `secondary` / `no_data` |
+| `flussonic_input_sources_switches` | — | Input switch count |
+| `flussonic_dvr_read_performance` | `type` | DVR read segments by type |
+| `flussonic_dvr_write_performance` | `type` | DVR write segments by type |
+| `flussonic_play_count` | `protocol`, `resource`, `status` | Play HTTP response counts |
+| `flussonic_transcoder_hw` | `hw` | HW encoder (`1` on that label) |
+| `flussonic_transcoder_restarts` | — | Restarts |
+| `flussonic_transcoder_overloaded` | — | `0` / `1` |
+| `flussonic_transcoder_qualities` | — | Qualities count |
+| `flussonic_transcoder_frames` | — | Frames processed |
+| `flussonic_stream_uptime_miliseconds` | — | Deprecated spelling; same as below |
+| `flussonic_stream_uptime_milliseconds` | — | Uptime from `stats.lifetime` (ms) |
 
-## 🛠️ Customization
+**Exporter (process)**
 
-You can extend the exporter by:
+| Metric | Extra labels | Description |
+|--------|--------------|-------------|
+| `flussonic_exporter_build_info` | Info: `version`, `python` | Exporter and Python version |
+| `flussonic_exporter_last_success_timestamp_seconds` | `server_id` | Unix time of last successful API fetch |
 
-- Adding new metrics from additional Flussonic API fields.
-- Filtering or renaming streams before export.
-- Running **one exporter instance per Flussonic server** (each with its own `FLUSSONIC_SERVER_ID`) and scraping all targets from Prometheus.
-- Feeding Prometheus into alerting (Alertmanager), Grafana, or other aggregation stacks.
+Common labels on stream metrics: `server_id`, `stream_name`. Full contract: [`docs/metric-contract.md`](docs/metric-contract.md). Naming notes: [`docs/metric-naming.md`](docs/metric-naming.md).
 
-## ⚠️ Notes
+## Labels
 
-- Requires Flussonic API access with valid credentials; metrics are **gauges** reflecting API values—use `rate()` / `irate()` in PromQL for throughput (e.g. bits/s).
-- If `FLUSSONIC_IP`, `FLUSSONIC_USERNAME`, or `FLUSSONIC_PASSWORD` is missing, the fetch loop does not run; `/metrics` may be empty or stale until configuration is fixed.
-- Suitable for custom monitoring pipelines (Prometheus, Grafana, GCP Monitoring via Prometheus remote write, etc.).
-- Designed for metrics aggregation outside Flussonic Retroview when you need open, scrapable time series.
+- `server_id` — From `FLUSSONIC_SERVER_ID` or `{IP}:{PORT}`.
+- `stream_name` — Name with a `_stream` suffix removed when present.
 
-## 📈 Example Prometheus config
+Additional dimensions: `error_type`, `protocol`, `resource`, `status`, `source`, `type`, `hw` — see table above.
+
+## Prometheus scrape configuration
 
 ```yaml
 scrape_configs:
   - job_name: flussonic_exporter
+    scrape_interval: 15s
     static_configs:
       - targets: ["localhost:9105"]
 ```
 
-## 🤝 Contributing
+Kubernetes: point `targets` at the exporter Service or use Pod discovery; align `scrape_interval` with how often you need fresh rates (exporter polls Flussonic on `FLUSSONIC_FETCH_INTERVAL` independently).
 
-Contributions are welcome. Feel free to open issues or submit pull requests.
+## Example PromQL queries
+
+Replace `demo` with your `stream_name` label value as needed.
+
+**Approximate input bitrate (bits/s)** from cumulative bits:
+
+```promql
+rate(flussonic_input_bits_count{stream_name="demo"}[5m])
+```
+
+**Input errors per second** for a given `error_type`:
+
+```promql
+rate(flussonic_input_errors_count{stream_name="demo", error_type="errors_lost_packets"}[5m])
+```
+
+**Transcoder overloaded** (alert when `1`):
+
+```promql
+flussonic_transcoder_overloaded{stream_name="demo"} == 1
+```
+
+**Stream uptime (milliseconds)** — use the correctly spelled metric:
+
+```promql
+flussonic_stream_uptime_milliseconds{stream_name="demo"}
+```
+
+**Stale fetch detection (exporter vs Flussonic)** — seconds since last successful poll:
+
+```promql
+time() - flussonic_exporter_last_success_timestamp_seconds
+```
+
+## Known limitations
+
+- **Single Flussonic target per process** — no built-in multi-server list; run one exporter per server or fork the project for multi-target.
+- **API limit** — requests use `limit=200` streams; more streams require a code or API change.
+- **Gauges, not counters** — values mirror the API; monotonicity is not guaranteed across resets; use `rate()` with care on noisy series.
+- **Credentials in env** — use secrets management (Kubernetes Secrets, Docker secrets) in production.
+- **TLS** — self-signed Flussonic certs require `FLUSSONIC_VERIFY_SSL=false` (understand the risk) or a proper trust store.
+- **Readiness** — `/readyz` needs one successful fetch; if Flussonic is permanently down, readiness stays false while `/healthz` stays true.
+
+## Migration notes
+
+Renamed uptime series and policy: [`docs/migration-notes.md`](docs/migration-notes.md), [`docs/compatibility.md`](docs/compatibility.md).
+
+## Documentation files
+
+| File | Content |
+|------|---------|
+| [`docs/metric-contract.md`](docs/metric-contract.md) | Baseline metric and label contract |
+| [`docs/current-env.md`](docs/current-env.md) | Environment variables |
+| [`docs/metric-naming.md`](docs/metric-naming.md) | Gauge vs Counter conventions and review notes |
+| [`docs/compatibility.md`](docs/compatibility.md) | Aliases and compatibility policy |
+| [`docs/migration-notes.md`](docs/migration-notes.md) | Renamed metrics (e.g. uptime spelling) |
+| [`tests/fixtures/README.md`](tests/fixtures/README.md) | Synthetic vs captured API fixtures |
+
+## Grafana example dashboard
+
+Import [`examples/grafana/dashboard.json`](examples/grafana/dashboard.json) into Grafana (see [`examples/grafana/README.md`](examples/grafana/README.md)). It includes example panels for input bitrate (`rate` of `flussonic_input_bits_count`) and last successful fetch timestamp. Select your Prometheus data source on import.
+
+## Development
+
+Formatting and linting use **Black**, **Ruff**, and **mypy** (see [`pyproject.toml`](pyproject.toml)).
+
+A [`Makefile`](Makefile) wraps common tasks:
+
+```bash
+make help              # list targets
+make install-dev       # pip install runtime + dev deps
+make format            # black + ruff --fix
+make lint              # ruff + black --check + mypy (read-only)
+make test              # pytest
+make ci                # lint + test (same as CI locally)
+make build             # docker build
+make compose-up        # docker compose up -d
+```
+
+Equivalent manual commands:
+
+```bash
+pip install -r requirements-dev.txt
+black flussonic_exporter tests
+ruff check flussonic_exporter tests
+mypy flussonic_exporter
+pytest tests/
+```
+
+**Pre-commit** (optional):
+
+```bash
+pip install pre-commit
+pre-commit install
+pre-commit run --all-files
+```
+
+Configuration: [`.pre-commit-config.yaml`](.pre-commit-config.yaml).
+
+**CI**: GitHub Actions [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs Ruff, Black `--check`, mypy, and pytest on pushes and pull requests to `main`/`master`.
+
+## Contributing
+
+Issues and pull requests are welcome. Please run the checks in [Development](#development) before submitting.

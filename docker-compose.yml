@@ -1,0 +1,48 @@
+# Local stack: exporter only by default.
+# Optional Prometheus (profile `monitoring`): docker compose --profile monitoring up -d
+#
+# Create `.env` from `.env.example` and set FLUSSONIC_* (Compose loads `.env` from the project root).
+
+services:
+  flussonic-exporter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flussonic-exporter:local
+    container_name: flussonic-exporter
+    ports:
+      - "${EXPORTER_PORT:-9105}:9105"
+    env_file:
+      - .env
+    environment:
+      EXPORTER_PORT: "9105"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9105/healthz', timeout=4)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  prometheus:
+    profiles: ["monitoring"]
+    image: prom/prometheus:v2.55.1
+    container_name: flussonic-prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    depends_on:
+      flussonic-exporter:
+        condition: service_healthy
+    restart: unless-stopped

@@ -1,0 +1,63 @@
+{
+  "streams": [
+    {
+      "name": "demo_stream",
+      "stats": {
+        "lifetime": 3600000,
+        "transcoder_overloaded": false,
+        "input": {
+          "bytes": 1024,
+          "errors": 0,
+          "errors_lost_packets": 1,
+          "errors_decoder_reset": 0,
+          "errors_broken_payload": 0,
+          "errors_dropped_frames": 0,
+          "errors_desync": 0,
+          "errors_ts_pat": 0,
+          "errors_ts_service_lost": 0,
+          "errors_ts_stuck_restarts": 0,
+          "errors_ts_jump_restarts": 0,
+          "errors_404": 0,
+          "errors_403": 0,
+          "errors_500": 0,
+          "errors_crashed": 0,
+          "resync_count_drift": 0,
+          "resync_count_jump": 0,
+          "resync_count_normal": 0,
+          "reorder_count": 0,
+          "invalid_secondary_inputs": 0,
+          "num_sec_on_primary_input": 100,
+          "num_sec_on_secondary_input": 0,
+          "num_sec_no_data": 0,
+          "input_switches": 2
+        },
+        "play": {
+          "play_hls_http_200": 42,
+          "play_dash_http_404": 1
+        },
+        "dvr_read_performance": {
+          "segments_read_fast": { "ram": 1, "cache": 2, "local": 3, "remote": 0 },
+          "segments_read_slow": {},
+          "segments_read_delayed": {},
+          "segments_read_enoent": 0,
+          "segments_read_failed": 0
+        },
+        "dvr_write": {
+          "segments_written_fast": 10,
+          "segments_written_slow": 0,
+          "segments_written_delayed": 0,
+          "segments_written_collapsed": 0,
+          "segments_failed": 0,
+          "segments_skipped": 0,
+          "segments_discontinuity": 0
+        },
+        "transcoder": {
+          "hw": "nvenc",
+          "restarts": 0,
+          "qualities": 3,
+          "frames": 999
+        }
+      }
+    }
+  ]
+}

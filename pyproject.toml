@@ -1,0 +1,33 @@
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["flussonic_exporter", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E",
+  "F",
+  "I",
+  "UP",
+  "B",
+]
+ignore = [
+  "E501",
+]
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+warn_return_any = false
+ignore_missing_imports = true
+strict_optional = true
+show_error_codes = true
+packages = ["flussonic_exporter"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+ignore_errors = true
