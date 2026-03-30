@@ -23,6 +23,7 @@ A lightweight [Prometheus](https://prometheus.io/) exporter for **Flussonic Medi
 - [Grafana example](#grafana-example-dashboard)
 - [Development](#development)
 - [Contributing](#contributing)
+- [Star History](#star-history)
 
 ## Purpose
 
@@ -319,3 +320,13 @@ Configuration: [`.pre-commit-config.yaml`](.pre-commit-config.yaml).
 ## Contributing
 
 Issues and pull requests are welcome. Please run the checks in [Development](#development) before submitting.
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=ntthuan060102github%2FFlussonic-Exporter&type=date&logscale=&legend=bottom-right">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/image?repos=ntthuan060102github/Flussonic-Exporter&type=date&theme=dark&legend=bottom-right" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/image?repos=ntthuan060102github/Flussonic-Exporter&type=date&legend=bottom-right" />
+   <img alt="Star History Chart" src="https://api.star-history.com/image?repos=ntthuan060102github/Flussonic-Exporter&type=date&legend=bottom-right" />
+ </picture>
+</a>
